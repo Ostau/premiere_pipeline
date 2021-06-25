@@ -1,3 +1,4 @@
 # Premiere Pipeline Scripts
 
-Uses: https://github.com/qmasingarbe/pymiere
+Install to Run: 
+https://github.com/qmasingarbe/pymiere
