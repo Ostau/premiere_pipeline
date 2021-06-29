@@ -1,4 +1,5 @@
 import pymiere
+import time
 from pymiere.wrappers import time_from_seconds
 from utility_methods import *
 
@@ -24,45 +25,68 @@ BUMPER_SCALE_SQUARE = 317
 BUMPER_SCALE_VERT = 179
 BUMPER_CLIP_LENGTH = 5 # seconds
 NUM_ARMATURES = 3
+DEBUG = False
 
-# where certain specific elements live
-#yaas_bumper = project.rootItem.children[2].children[0].children[0]
+# make a temporary copy of source to not destroy anything by accident
 temp_src_copy = dup_seq(SOURCE_SEQUENCE, "temp")
+empty_annotation = find_project_item("annotation", [])
 
+# create a folder for the short sequences
 armatures_bin = project.rootItem.createBin(BASE_SEQUENCE_NAME + "s")
 
 print("Clearing source...")
 clear_video_track(temp_src_copy, TRACKS["original"])
 clear_audio_track(temp_src_copy, TRACKS["original"])
 
-
+# dictonary to keep track of seen armatures
 armatures = {}
+annotation_time_pointer = {}
 
-# loop over each annotation clip
-counter = 0
+# armature counter
+counter = 1
+
+# annotion counter
+annot_processed = 0
+
+# loop over each annotation track and clip
 track_num = TRACKS["annotations"]
 while track_num < len(temp_src_copy.videoTracks):
     for annotation_clip in temp_src_copy.videoTracks[track_num].clips:
-        # get the annotation componenet
-        annotation = [comp for comp in annotation_clip.components if comp.displayName == "Graphic Parameters"][0]
+        # wait for Premiere to catch up
+        time.sleep(10)
+        annot_processed+=1
 
         # extract the armature/caption/start/end values
-        armature = annotation.properties[0].getValue()['textEditValue']
-        caption = annotation.properties[1].getValue()['textEditValue']
+        unwrapped_annot = unwrap_annot(annotation_clip)
+        armature = unwrapped_annot[0]
+        notes = unwrapped_annot[1]
+
+        # get the start and end of the annotation clip
         start = annotation_clip.start.seconds
         end = annotation_clip.end.seconds
+
+        if DEBUG:
+            print("start, end: "+ str(start) + ", " + str(end))
 
         print()
         print("Armature: " + armature)
 
+        print("- calculating duration of useful clips.")
+        track = temp_src_copy.videoTracks[TRACKS["footage"]]
+        useful_duration = 0
+        for clip in track.clips:
+            if (clip.start.seconds >= start and clip.end.seconds <= end):
+                useful_duration += clip.duration.seconds
+            if (clip.start.seconds >= end):
+                break
+
+        if DEBUG:
+            print("useful_duration: " + str(useful_duration))
+
         if (armature in armatures):
-            print("Adding to existing sequence...")
+            print("- adding to an existing sequence.")
             # sequence already exists
             new_seq = armatures[armature]
-
-            # find where the video and audio left off
-            move_point_footage = footage_track.clips[len(footage_track.clips) - 1].end.seconds
-            move_point_audio = audio_track.clips[len(footage_track.clips) - 1].end.seconds
 
             # specify the tracks that we'll be using
             src_footage_track = temp_src_copy.videoTracks[TRACKS["footage"]]
@@ -71,17 +95,30 @@ while track_num < len(temp_src_copy.videoTracks):
             src_audio_track = temp_src_copy.audioTracks[TRACKS["footage"]]
             audio_track = new_seq.audioTracks[TRACKS["footage"]]
 
-            print ("Moving clips...")
+            # find where the video and audio left off
+            move_point_footage = get_last_clip(footage_track).end.seconds
+            move_point_audio = get_last_clip(audio_track).end.seconds
+            
+            if DEBUG:
+                print("move_point_footage: " + str(move_point_footage))
+                print("move_point_audio: " + str(move_point_audio))
+
+            print ("- moving clips over")
             # iterate over the original footage and move it to the new sequence
             for footage_clip in src_footage_track.clips:
-                if (footage_clip.start.seconds >= end): 
+
+                if DEBUG:
+                    print("footage_clip.start: " + str(footage_clip.start.seconds))
+                    print("footage_clip.end: " + str(footage_clip.end.seconds))
+
+                if (footage_clip.start.seconds >= end - 0.0001): 
                     break
                 elif (footage_clip.start.seconds >= start):
                     # insert the clip
                     footage_track.insertClip(footage_clip.projectItem, time_from_seconds(move_point_footage))
 
                     # trim it to the right time
-                    inserted_clip = footage_track.clips[len(footage_track.clips)-1]
+                    inserted_clip = get_last_clip(footage_track)
                     inserted_clip.end = time_from_seconds(move_point_footage + footage_clip.duration.seconds)
                     inserted_clip.inPoint = footage_clip.inPoint
 
@@ -89,12 +126,21 @@ while track_num < len(temp_src_copy.videoTracks):
                     move_point_footage += footage_clip.duration.seconds
 
                     # trim it to the right time
-                    inserted_clip = audio_track.clips[len(audio_track.clips)-1]
-                    inserted_clip.end = time_from_seconds(move_point_audio + footage_clip.duration.seconds)
-                    inserted_clip.inPoint = footage_clip.inPoint
+                    inserted_audio_clip = get_last_clip(audio_track)
+                    inserted_audio_clip.end = time_from_seconds(move_point_audio + footage_clip.duration.seconds)
+                    inserted_audio_clip.inPoint = footage_clip.inPoint
 
                     # update the end point
                     move_point_audio += footage_clip.duration.seconds
+
+            print("- adding associated annotation")
+            annot_track_num = TRACKS["annotations"]
+            main_annot_track = new_seq.videoTracks[annot_track_num]
+            main_annot_track.insertClip(empty_annotation, annotation_time_pointer[armature])
+            inserted_annotation = get_last_clip(main_annot_track)
+            populate_annot(inserted_annotation, armature, notes)
+            inserted_annotation.end = time_from_seconds(annotation_time_pointer[armature] + useful_duration)
+            annotation_time_pointer[armature] = inserted_annotation.end.seconds
 
         else:
             # create a new sequence and remove all of the annotations and source footage
@@ -102,46 +148,46 @@ while track_num < len(temp_src_copy.videoTracks):
             new_seq = dup_seq("temp", new_seq_name)
             # move it to the armatures bin
             new_seq.projectItem.moveBin(armatures_bin)
+
+            # set the annotation time pointer for this armature to the start
+            annotation_time_pointer[armature] = 0
  
             
-            print("Filtering and clearing annotations...")
+            print("- clearing annotations")
             annot_track_num = TRACKS["annotations"]
+            # iterate over each annotation track
             while annot_track_num < len(temp_src_copy.videoTracks):
-                for clip in new_seq.videoTracks[annot_track_num].clips:
-                    curr_annotation = [comp for comp in clip.components if comp.displayName == "Graphic Parameters"][0]
-                    # extract the armature/caption/start/end values
-                    curr_armature = curr_annotation.properties[0].getValue()['textEditValue']
-
-                    if (not curr_armature == armature):
-                        clip.remove(False, False)
+                clear_video_track(new_seq, annot_track_num)
                 annot_track_num+=1
 
             footage_track = new_seq.videoTracks[TRACKS["footage"]]
             audio_track = new_seq.audioTracks[TRACKS["footage"]]
 
-            print("Clearing extra footage...")
+            print("- clearing extra footage")
             # remove all the clips that are not under the annotations
             clear_track_outside_of(footage_track, start, end)
 
-            print("Clearing extra audio...")
+            print("- clearing extra audio")
             # remove all the audio clips that are not under the annotations
             clear_track_outside_of(audio_track, start, end)
 
-            print("Pushing footage to front...")
+            print("- pushing footage to front")
             # push all the clips to the front
             compress_track(footage_track, 0)
 
-            print("Pushing audio to front...")
+            print("- pushing audio to front")
             # push all the audio clips to the front
             compress_track(audio_track, 0)
 
-            print("Pushing annotations...")
+            print("- adding associated annotation")
+            
             annot_track_num = TRACKS["annotations"]
-            time_pointer = 0
-            while annot_track_num < len(temp_src_copy.videoTracks):
-                annot_track = new_seq.videoTracks[annot_track_num]
-                compress_track(annot_track, time_pointer)
-                annot_track_num+=1
+            main_annot_track = new_seq.videoTracks[annot_track_num]
+            main_annot_track.insertClip(empty_annotation, annotation_time_pointer[armature])
+            inserted_annotation = get_last_clip(main_annot_track)
+            populate_annot(inserted_annotation, armature, notes)
+            inserted_annotation.end = time_from_seconds(annotation_time_pointer[armature] + useful_duration)
+            annotation_time_pointer[armature] = inserted_annotation.end.seconds
 
             armatures[armature] = new_seq
             counter+=1
@@ -157,11 +203,12 @@ project.deleteSequence(temp_src_copy)
 
 print()
 
+print("Creating vertical versions...")
+
 for i in range(len(armatures)):
 
-    new_seq_name = BASE_SEQUENCE_NAME + "_" + str(i)
+    new_seq_name = BASE_SEQUENCE_NAME + "_" + str(i+1)
     # Duplicate sequence in vertical form
-    print("Creating vertical version...")
     new_seq_vert = dup_seq(new_seq_name, new_seq_name+"_9_16")
     new_seq_vert.projectItem.moveBin(armatures_bin)
 
@@ -170,3 +217,7 @@ for i in range(len(armatures)):
     settings.videoFrameWidth = 1080
     settings.videoFrameHeight = 1920
     new_seq_vert.setSettings(settings)
+
+print()
+print("Annotations processed: " + str(annot_processed))
+print("Armatures created: " + str(counter))
