@@ -24,8 +24,11 @@ TRACKS = {"annotations": 2, "original": 0, "footage": 1}
 BUMPER_SCALE_SQUARE = 317
 BUMPER_SCALE_VERT = 179
 BUMPER_CLIP_LENGTH = 5 # seconds
-NUM_ARMATURES = 3
+NUM_ARMATURES = 20
+PROJECT_PATH = project.path[0:len(project.path)-14]
 DEBUG = False
+
+registry = open(PROJECT_PATH+"armature_registry.txt", "w")
 
 # make a temporary copy of source to not destroy anything by accident
 temp_src_copy = dup_seq(SOURCE_SEQUENCE, "temp")
@@ -38,7 +41,7 @@ print("Clearing source...")
 clear_video_track(temp_src_copy, TRACKS["original"])
 clear_audio_track(temp_src_copy, TRACKS["original"])
 
-# dictonary to keep track of seen armatures
+# dictonary to keep track of seen armatures and their folders
 armatures = {}
 annotation_time_pointer = {}
 
@@ -144,10 +147,11 @@ while track_num < len(temp_src_copy.videoTracks):
 
         else:
             # create a new sequence and remove all of the annotations and source footage
-            new_seq_name = BASE_SEQUENCE_NAME + "_" + str(counter)
+            new_seq_name = BASE_SEQUENCE_NAME + "_" + str(counter) + "_footage"
             new_seq = dup_seq("temp", new_seq_name)
             # move it to the armatures bin
-            new_seq.projectItem.moveBin(armatures_bin)
+            armature_bin = armatures_bin.createBin(str(counter))
+            new_seq.projectItem.moveBin(armature_bin)
 
             # set the annotation time pointer for this armature to the start
             annotation_time_pointer[armature] = 0
@@ -190,6 +194,7 @@ while track_num < len(temp_src_copy.videoTracks):
             annotation_time_pointer[armature] = inserted_annotation.end.seconds
 
             armatures[armature] = new_seq
+            registry.write(str(counter) + ": " + armature + "\n")
             counter+=1
 
 
@@ -203,20 +208,8 @@ project.deleteSequence(temp_src_copy)
 
 print()
 
-print("Creating vertical versions...")
-
-for i in range(len(armatures)):
-
-    new_seq_name = BASE_SEQUENCE_NAME + "_" + str(i+1)
-    # Duplicate sequence in vertical form
-    new_seq_vert = dup_seq(new_seq_name, new_seq_name+"_9_16")
-    new_seq_vert.projectItem.moveBin(armatures_bin)
-
-    # resize the sequence
-    settings = new_seq_vert.getSettings()
-    settings.videoFrameWidth = 1080
-    settings.videoFrameHeight = 1920
-    new_seq_vert.setSettings(settings)
+# close the regsitry text file
+registry.close()
 
 print()
 print("Annotations processed: " + str(annot_processed))
